@@ -1,0 +1,284 @@
+---
+title: "Validation of Grimes' GRIM-U code"
+author: "Ian Hussey"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: show
+    highlight: haddock
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+```{r include=FALSE}
+
+# formatting options
+# set default chunk options
+knitr::opts_chunk$set(message = FALSE, 
+                      warning = FALSE)
+
+```
+
+# Problem setting
+
+From my understanding, simrank() requires an integer input for U. To simulate a half-integer target (e.g., 70.5), the code must simulate the integer above it (e.g., 71) and then force a tie. This tie mathematically subtracts 0.5 from the score, hitting the target ($71 - 0.5 = 70.5$).
+
+However, the original code used `round()`, which follows "Banker's Rounding" (rounding to the nearest even number). eg the following illustrates that base::round() doens't perform how many people expect:
+
+```{r}
+round(0.5)
+round(1.5)
+round(2.5)
+round(3.5)
+round(4.5)
+round(5.5)
+```
+
+If so, this creates a bug in 50% of cases. 
+
+- Failure Case: For a target of 70.5, round(70.5) rounds down to `r round(70.5)`. The tie logic then calculates $70 - 0.5 = 69.5$, which is incorrect.
+- Success Case: For a target of 71.5, round(71.5) rounds up to `r round(71.5)`. The tie logic calculates $72 - 0.5 = 71.5$, which works.
+
+The fix is to use `ceiling(k)` instead of `round(k)`. `ceiling()` always rounds up to the next integer, ensuring we always start with the higher value needed for the subtraction logic.
+
+So `j <- simrank(n1, n2, U_target = round(k))` becomes `j <- simrank(n1, n2, U_target = ceiling(k))`
+
+An alternative would be Lukas Jung's excellent {roundwork} package for `round_up()` to produce the expected behavior, but that's another dependency.
+
+# Demonstration of the impact of the change
+
+## Original code 
+
+```{r}
+
+simrank <- function(n1, n2, U_target, max_iter = 100000) {
+  total_ranks <- 1:(n1 + n2)
+  R1_target <- U_target + n1 * (n1 + 1) / 2
+  
+  for (i in 1:max_iter) {
+    group1_ranks <- sort(sample(total_ranks, n1, replace = FALSE))
+    if (sum(group1_ranks) == R1_target) {
+      group2_ranks <- setdiff(total_ranks, group1_ranks)
+      return(list(
+        group1_ranks = group1_ranks,
+        group2_ranks = group2_ranks,
+        U = U_target
+      ))
+    }
+  }
+  
+  # Return NA instead of stopping with an error
+  return(NA)
+}
+
+
+#Here enter in your n1 and n2
+n1 <- 18
+n2 <- 60
+
+#Expected stats (Ties and no ties)
+uexp <- (n1*n2)/2
+seu <- sqrt(n1*n2*(n1+n2+1)/12)
+seu_tie <- sqrt(n1*n2*(n1+n2+1)/12 - n1*n2*(7)/(12*(n1 + n2)*(n1 + n2 - 1)) )
+
+#range of p-values of interest
+pvals <- seq(0.01, 0.10, by = 0.005)
+zscores <- qnorm(1 - pvals/2)
+
+#conversion (no ties)
+upred <- seu*zscores + uexp  #has higher max value
+upredtie <- seu_tie*zscores + uexp #has lower min value 
+vals <- seq(floor(upredtie[length(upredtie)]),ceiling(upred[1]) , by = 0.5)
+exactval <- rep(NA_real_, length(vals))
+spssval <- rep(NA_real_, length(vals))
+
+
+
+
+#Let it run 
+i <- 1
+while (i <= length(vals)) {
+  k <- vals[i]
+  j <- simrank(n1, n2, U_target = round(k))
+  
+  # Skip iteration if simulation failed
+  if (is.na(j[1])) {
+    exactval[i] <- NA
+    spssval[i] <- NA
+    i <- i + 1
+    next
+  }
+
+  # If k is an integer
+  if (round(k) == k) {
+    m1 <- wilcox.test(j$group1_ranks, j$group2_ranks)
+    m2 <- wilcox.test(j$group1_ranks, j$group2_ranks, correct = FALSE, exact = FALSE)
+  } else {
+    # Adjust one value to simulate a fractional rank
+    w <- which(diff(j$group2_ranks) == 2)[1]
+    if (!is.na(w)) {
+      mv <- j$group2_ranks[w]
+      j$group2_ranks[w] <- mv + 0.5
+
+      w2 <- which(j$group1_ranks == mv + 1)
+      if (length(w2) > 0) {
+        j$group1_ranks[w2] <- mv + 0.5
+      }
+    }
+
+    m1 <- wilcox.test(j$group1_ranks, j$group2_ranks)
+    m2 <- wilcox.test(j$group1_ranks, j$group2_ranks, correct = FALSE, exact = FALSE)
+  }
+
+  exactval[i] <- m1$p.value
+  spssval[i] <- m2$p.value
+
+  i <- i + 1
+}
+
+n1v <- rep(n1,i-1)
+n2v <- rep(n2,i-1)
+
+df <- data.frame("U_Values" = vals, "P_Exact" = exactval, "Approx P" = spssval)
+df$Diff <- abs(df$Approx.P - df$P_Exact)
+df$n1 <- n1v
+df$n2 <- n2v
+
+```
+
+Ian's minor addition to allow comparisons:
+
+```{r}
+
+library(tidyverse)
+library(waldo)
+
+df <- df |>
+  rename(p_approx = Approx.P,
+         p_exact = P_Exact) |>
+  as_tibble()
+
+```
+
+## Fixed issue re rounding k
+
+```{r}
+
+simrank <- function(n1, n2, U_target, max_iter = 100000) {
+  total_ranks <- 1:(n1 + n2)
+  R1_target <- U_target + n1 * (n1 + 1) / 2
+  
+  for (i in 1:max_iter) {
+    group1_ranks <- sort(sample(total_ranks, n1, replace = FALSE))
+    if (sum(group1_ranks) == R1_target) {
+      group2_ranks <- setdiff(total_ranks, group1_ranks)
+      return(list(
+        group1_ranks = group1_ranks,
+        group2_ranks = group2_ranks,
+        U = U_target
+      ))
+    }
+  }
+  
+  # Return NA instead of stopping with an error
+  return(NA)
+}
+
+
+#Here enter in your n1 and n2
+n1 <- 18
+n2 <- 60
+
+#Expected stats (Ties and no ties)
+uexp <- (n1*n2)/2
+seu <- sqrt(n1*n2*(n1+n2+1)/12)
+seu_tie <- sqrt(n1*n2*(n1+n2+1)/12 - n1*n2*(7)/(12*(n1 + n2)*(n1 + n2 - 1)) )
+
+#range of p-values of interest
+pvals <- seq(0.01, 0.10, by = 0.005)
+zscores <- qnorm(1 - pvals/2)
+
+#conversion (no ties)
+upred <- seu*zscores + uexp  #has higher max value
+upredtie <- seu_tie*zscores + uexp #has lower min value 
+vals <- seq(floor(upredtie[length(upredtie)]),ceiling(upred[1]) , by = 0.5)
+exactval <- rep(NA_real_, length(vals))
+spssval <- rep(NA_real_, length(vals))
+
+
+
+
+#Let it run 
+i <- 1
+while (i <= length(vals)) {
+  k <- vals[i]
+  j <- simrank(n1, n2, U_target = ceiling(k)) # fixed: round() changed to ceiling()
+  
+  # Skip iteration if simulation failed
+  if (is.na(j[1])) {
+    exactval[i] <- NA
+    spssval[i] <- NA
+    i <- i + 1
+    next
+  }
+
+  # If k is an integer
+  if (round(k) == k) {
+    m1 <- wilcox.test(j$group1_ranks, j$group2_ranks)
+    m2 <- wilcox.test(j$group1_ranks, j$group2_ranks, correct = FALSE, exact = FALSE)
+  } else {
+    # Adjust one value to simulate a fractional rank
+    w <- which(diff(j$group2_ranks) == 2)[1]
+    if (!is.na(w)) {
+      mv <- j$group2_ranks[w]
+      j$group2_ranks[w] <- mv + 0.5
+
+      w2 <- which(j$group1_ranks == mv + 1)
+      if (length(w2) > 0) {
+        j$group1_ranks[w2] <- mv + 0.5
+      }
+    }
+
+    m1 <- wilcox.test(j$group1_ranks, j$group2_ranks)
+    m2 <- wilcox.test(j$group1_ranks, j$group2_ranks, correct = FALSE, exact = FALSE)
+  }
+
+  exactval[i] <- m1$p.value
+  spssval[i] <- m2$p.value
+
+  i <- i + 1
+}
+
+n1v <- rep(n1,i-1)
+n2v <- rep(n2,i-1)
+
+df_fixed <- data.frame("U_Values" = vals, "P_Exact" = exactval, "Approx P" = spssval)
+df_fixed$Diff <- abs(df_fixed$Approx.P - df_fixed$P_Exact)
+df_fixed$n1 <- n1v
+df_fixed$n2 <- n2v
+
+```
+
+Ian's minor addition to allow comparisons:
+
+```{r}
+
+df_fixed <- df_fixed |>
+  rename(p_approx = Approx.P,
+         p_exact = P_Exact) |>
+  as_tibble()
+
+```
+
+## Comparing original and fixed
+
+```{r}
+
+waldo::compare(df, df_fixed)
+
+```
+
+- this changes p_exact and p_exact values by up to c. .003, and affects a large proportion of cases. 
+
+
