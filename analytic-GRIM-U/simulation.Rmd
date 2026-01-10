@@ -1,0 +1,536 @@
+---
+title: "Validation of {Analytic GRIM-U}"
+author: "Ian Hussey"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    highlight: haddock
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+```{r include=FALSE}
+
+# formatting options
+# set default chunk options
+knitr::opts_chunk$set(message = FALSE, 
+                      warning = FALSE)
+
+# disable scientific notation
+options(scipen = 999) 
+
+```
+
+# Dependencies
+
+```{r}
+
+library(tibble)
+library(roundwork)
+
+library(tidyr)
+library(dplyr)
+library(forcats)
+library(readr)
+library(purrr) 
+library(furrr)
+library(ggplot2)
+library(ggstance)
+library(scales)
+library(knitr)
+library(kableExtra)
+
+```
+
+# True positive rate
+
+I.e., when U test results are generated from fitting U tests to simulated data, the resulting values must be possible. Analytic GRIM-U should flag 100% of these as consistent.
+
+## Functions
+
+```{r}
+
+# functions for simulation
+generate_data <- function(m1,
+                          m2,
+                          sd1,
+                          sd2,
+                          n1,
+                          n2) {
+  
+  data1 <- 
+    tibble(condition = "1",
+           score = rnorm(n = n1, mean = m1, sd = sd1))
+  
+  data2 <- 
+    tibble(condition = "2",
+           score = rnorm(n = n2, mean = m2, sd = sd2))
+  
+  data_combined <- bind_rows(data1,
+                             data2)
+  
+  return(data_combined)
+}
+
+analyze <- function(data, 
+                    m_digits,
+                    sd_digits,
+                    U_digits,
+                    p_digits) {
+  
+  res_summary <- data |>
+    group_by(condition) |>
+    summarize(m = mean(score),
+              sd = sd(score),
+              n = n()) |>
+    pivot_wider(names_from = condition, 
+                names_sep = "",
+                values_from = c("m", "sd", "n"))
+  
+  test_result <- wilcox.test(score ~ condition, 
+                             data = data, 
+                             alternative = "two.sided")
+  
+  res_utest <- tibble(
+    U = test_result$statistic,  
+    p = test_result$p.value,    
+    method = test_result$method 
+  )
+  
+  res <- bind_cols(res_summary, 
+                   res_utest)
+
+  res <- res |>
+    mutate(m1 = round_up(m1, m_digits),
+           m2 = round_up(m2, m_digits),
+           sd1 = round_up(sd1, sd_digits),
+           sd2 = round_up(sd2, sd_digits),
+           U = round_up(U, U_digits),
+           p = round_up(p, p_digits),
+           p_operator = dplyr::if_else(dplyr::near(p, 0), "less_than", "equals"),
+           p = dplyr::if_else(dplyr::near(p, 0), 1 * 10^-p_digits, p))
+  
+  return(res)
+}
+
+reconstruct <- function(results,
+                        p_digits){
+  grimu_check(n1 = results$n1, 
+              n2 = results$n2, 
+              p_reported = results$p, 
+              comparison = "equal", 
+              digits = p_digits)$summary
+}
+
+```
+
+## Run simulation
+
+```{r}
+
+source("../R/grimu_refactored.R")
+
+if(file.exists("simulation.rds")){
+  simulation <- read_rds("simulation.rds")
+} else {
+  
+  # simulation parameters
+  experiment_parameters <- expand_grid(
+    pop_m1 = 0,
+    pop_m2 = c(0, 0.5),
+    pop_sd1 = 1,
+    pop_sd2 = 1, 
+    pop_n1 = seq.int(from = 2, to = 50, by = 1),
+    m_digits = 2,
+    sd_digits = 2,
+    U_digits = 2,
+    p_digits = 3,
+    iteration = 1:1000
+  ) |>
+    mutate(pop_n2 = pop_n1)
+  
+  # set up parallelization
+  plan(multisession, workers = future::availableCores())
+  
+  # set seed
+  set.seed(42)
+  
+  # run simulation
+  simulation <- experiment_parameters |>
+    # generate datasets
+    mutate(generated_data = future_pmap(.l = list(m1 = pop_m1,
+                                                  m2 = pop_m2,
+                                                  sd1 = pop_sd1,
+                                                  sd2 = pop_sd2,
+                                                  n1 = pop_n1,
+                                                  n2 = pop_n2),
+                                        .f = generate_data,
+                                        .progress = TRUE,
+                                        .options = furrr_options(seed = TRUE))) |>
+    # analyze data to create the real p and d values and summary stats
+    mutate(results_original = future_pmap(.l = list(data = generated_data,
+                                                    m_digits = m_digits,
+                                                    sd_digits = sd_digits,
+                                                    U_digits = U_digits,
+                                                    p_digits = p_digits),
+                                          .f = analyze,
+                                          .progress = TRUE,
+                                          .options = furrr_options(seed = TRUE))) |>
+    # use recalc to reconstruct the p and d bounds
+    mutate(results_reconstructed = future_pmap(.l = list(results = results_original,
+                                                         p_digits = p_digits),
+                                               .f = reconstruct,
+                                               .progress = TRUE,
+                                               .options = furrr_options(seed = TRUE))) |>
+    unnest(results_reconstructed) 
+  
+  write_rds(simulation, "simulation.rds", compress = "gz")
+}
+
+```
+
+## Summarize results
+
+All results
+
+```{r}
+
+simulation_coverage <- simulation |>
+  summarize(
+    coverage_p_recalc = mean(consistent)
+  )
+
+simulation_coverage |>
+  kable() |>
+  kable_classic(full_width = FALSE)
+
+```
+
+By factorial, only cells with imperfect coverage
+
+```{r}
+
+simulation_coverage_by <- simulation |>
+  group_by(pop_es = pop_m2, 
+           pop_n_per_group = pop_n1) |>
+  summarize(
+    coverage_p_recalc = mean(consistent)
+  )
+
+simulation_coverage_by |>
+  kable() |>
+  kable_classic(full_width = FALSE)
+
+```
+
+# False positive rate
+
+What proportion of *significant* p values would pass Analytic GRIM-U if they were fabricated?
+
+Using the `grimu_saturation()` function.
+
+## Significant p values 
+
+### Reported to 2 decimal places
+
+```{r}
+
+comparison_grid_d2 <- expand_grid(
+  n_total = seq(8, 25, by = 1)
+) %>%
+  mutate(
+    # Design 1: Balanced (approx 50/50)
+    n1_bal = floor(n_total * 0.5),
+    n2_bal = ceiling(n_total * 0.5),
+    
+    # Design 2: Unbalanced (approx 10/90)
+    n1_unbal = floor(n_total * 0.4),
+    n2_unbal = ceiling(n_total * 0.6),
+    
+    # Design 2: Unbalanced (approx 10/90)
+    n1_unbal_extreme = floor(n_total * 0.2),
+    n2_unbal_extreme = ceiling(n_total * 0.8),
+    
+    # Calculate Saturation (3 decimal places)
+    sat_balanced = map2_dbl(n1_bal, n2_bal, ~grimu_saturation(.x, .y, decimals = 2)),
+    sat_unbalanced = map2_dbl(n1_unbal, n2_unbal, ~grimu_saturation(.x, .y, decimals = 2)),
+    sat_unbalanced_extreme = map2_dbl(n1_unbal_extreme, n2_unbal_extreme, ~grimu_saturation(.x, .y, decimals = 2))
+  )
+
+comparison_grid_d2 %>%
+  pivot_longer(cols = starts_with("sat_"), names_to = "Design", values_to = "Saturation") %>%
+  mutate(Design = recode(Design, 
+                         "sat_balanced" = "Balanced N (1:1 allocation)", 
+                         "sat_unbalanced" = "Unbalanced N (1:2 allocation)", 
+                         "sat_unbalanced_extreme" = "Unbalanced N (1:4 allocation)")) %>%
+  ggplot(aes(x = n_total, y = Saturation, color = Design)) +
+  geom_line(linewidth = 1, alpha = 0.75) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "The Forensic Power of GRIM-U",
+    subtitle = "Proportion of valid p-values (p < .05, 2 decimals)\nthat are mathematically possible",
+    x = "Total Sample Size (N)",
+    y = "Saturation (FPR)"
+  ) +
+  theme_linedraw(base_size = 14)
+
+```
+
+### Reported to 3 decimal places
+
+```{r}
+
+comparison_grid_d3 <- expand_grid(
+  n_total = seq(8, 100, by = 1)
+) %>%
+  mutate(
+    # Design 1: Balanced (approx 50/50)
+    n1_bal = floor(n_total * 0.5),
+    n2_bal = ceiling(n_total * 0.5),
+    
+    # Design 2: Unbalanced (approx 10/90)
+    n1_unbal = floor(n_total * 0.4),
+    n2_unbal = ceiling(n_total * 0.6),
+    
+    # Design 2: Unbalanced (approx 10/90)
+    n1_unbal_extreme = floor(n_total * 0.2),
+    n2_unbal_extreme = ceiling(n_total * 0.8),
+    
+    # Calculate Saturation (3 decimal places)
+    sat_balanced = map2_dbl(n1_bal, n2_bal, ~grimu_saturation(.x, .y, decimals = 3)),
+    sat_unbalanced = map2_dbl(n1_unbal, n2_unbal, ~grimu_saturation(.x, .y, decimals = 3)),
+    sat_unbalanced_extreme = map2_dbl(n1_unbal_extreme, n2_unbal_extreme, ~grimu_saturation(.x, .y, decimals = 3))
+  )
+
+comparison_grid_d3 %>%
+  pivot_longer(cols = starts_with("sat_"), names_to = "Design", values_to = "Saturation") %>%
+  mutate(Design = recode(Design, 
+                         "sat_balanced" = "Balanced N (1:1 allocation)", 
+                         "sat_unbalanced" = "Unbalanced N (1:2 allocation)", 
+                         "sat_unbalanced_extreme" = "Unbalanced N (1:4 allocation)")) %>%
+  ggplot(aes(x = n_total, y = Saturation, color = Design)) +
+  geom_line(linewidth = 1, alpha = 0.75) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "The Forensic Power of GRIM-U",
+    subtitle = "Proportion of valid p-values (p < .05, 3 decimals)\nthat are mathematically possible",
+    x = "Total Sample Size (N)",
+    y = "Saturation (FPR)"
+  ) +
+  theme_linedraw(base_size = 14)
+
+```
+
+### Reported to 4 decimal places
+
+```{r}
+
+comparison_grid_d4 <- expand_grid(
+  n_total = seq(8, 250, by = 1)
+) %>%
+  mutate(
+    # Design 1: Balanced (approx 50/50)
+    n1_bal = floor(n_total * 0.5),
+    n2_bal = ceiling(n_total * 0.5),
+    
+    # Design 2: Unbalanced (approx 10/90)
+    n1_unbal = floor(n_total * 0.4),
+    n2_unbal = ceiling(n_total * 0.6),
+    
+    # Design 2: Unbalanced (approx 10/90)
+    n1_unbal_extreme = floor(n_total * 0.2),
+    n2_unbal_extreme = ceiling(n_total * 0.8),
+    
+    # Calculate Saturation (3 decimal places)
+    sat_balanced = map2_dbl(n1_bal, n2_bal, ~grimu_saturation(.x, .y, decimals = 4)),
+    sat_unbalanced = map2_dbl(n1_unbal, n2_unbal, ~grimu_saturation(.x, .y, decimals = 4)),
+    sat_unbalanced_extreme = map2_dbl(n1_unbal_extreme, n2_unbal_extreme, ~grimu_saturation(.x, .y, decimals = 4))
+  )
+
+comparison_grid_d4 %>%
+  pivot_longer(cols = starts_with("sat_"), names_to = "Design", values_to = "Saturation") %>%
+  mutate(Design = recode(Design, 
+                         "sat_balanced" = "Balanced N (1:1 allocation)", 
+                         "sat_unbalanced" = "Unbalanced N (1:2 allocation)", 
+                         "sat_unbalanced_extreme" = "Unbalanced N (1:4 allocation)")) %>%
+  ggplot(aes(x = n_total, y = Saturation, color = Design)) +
+  geom_line(linewidth = 1, alpha = 0.75) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "The Forensic Power of GRIM-U",
+    subtitle = "Proportion of valid p-values (p < .05, 4 decimals)\nthat are mathematically possible",
+    x = "Total Sample Size (N)",
+    y = "Saturation (FPR)"
+  ) +
+  theme_linedraw(base_size = 14)
+
+```
+
+## All p values [0,1] 
+
+### Reported to 2 decimal places
+
+```{r}
+
+comparison_grid_d2_full <- expand_grid(
+  n_total = seq(8, 50, by = 1)
+) %>%
+  mutate(
+    # Design 1: Balanced (approx 50/50)
+    n1_bal = floor(n_total * 0.5),
+    n2_bal = ceiling(n_total * 0.5),
+    
+    # Design 2: Unbalanced (approx 40/60)
+    n1_unbal = floor(n_total * 0.4),
+    n2_unbal = ceiling(n_total * 0.6),
+    
+    # Design 3: Extreme Unbalanced (approx 20/80)
+    n1_unbal_extreme = floor(n_total * 0.2),
+    n2_unbal_extreme = ceiling(n_total * 0.8),
+    
+    # Calculate Saturation (4 decimal places, FULL range [0, 1])
+    # We explicitly pass p_threshold = 1.0 to check the entire probability space
+    sat_balanced = map2_dbl(n1_bal, n2_bal, 
+                           ~grimu_saturation(.x, .y, decimals = 2, p_threshold = 1.0)),
+    
+    sat_unbalanced = map2_dbl(n1_unbal, n2_unbal, 
+                             ~grimu_saturation(.x, .y, decimals = 2, p_threshold = 1.0)),
+    
+    sat_unbalanced_extreme = map2_dbl(n1_unbal_extreme, n2_unbal_extreme, 
+                                     ~grimu_saturation(.x, .y, decimals = 2, p_threshold = 1.0))
+  )
+
+# --- Plotting ---
+
+comparison_grid_d2_full %>%
+  pivot_longer(cols = starts_with("sat_"), names_to = "Design", values_to = "Saturation") %>%
+  mutate(Design = recode(Design, 
+                         "sat_balanced" = "Balanced N (1:1 allocation)", 
+                         "sat_unbalanced" = "Unbalanced N (1:1.5 allocation)", 
+                         "sat_unbalanced_extreme" = "Unbalanced N (1:4 allocation)")) %>%
+  ggplot(aes(x = n_total, y = Saturation, color = Design)) +
+  geom_line(linewidth = 1, alpha = 0.75) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "The Forensic Power of GRIM-U (Full Range)",
+    subtitle = "Proportion of ALL valid p-values (range 0 to 1, 2 decimals)\nthat are mathematically possible",
+    x = "Total Sample Size (N)",
+    y = "Saturation (FPR)"
+  ) +
+  theme_linedraw(base_size = 14)
+  
+```
+
+### Reported to 3 decimal places
+
+```{r}
+
+comparison_grid_d3_full <- expand_grid(
+  n_total = seq(8, 250, by = 1)
+) %>%
+  mutate(
+    # Design 1: Balanced (approx 50/50)
+    n1_bal = floor(n_total * 0.5),
+    n2_bal = ceiling(n_total * 0.5),
+    
+    # Design 2: Unbalanced (approx 40/60)
+    n1_unbal = floor(n_total * 0.4),
+    n2_unbal = ceiling(n_total * 0.6),
+    
+    # Design 3: Extreme Unbalanced (approx 20/80)
+    n1_unbal_extreme = floor(n_total * 0.2),
+    n2_unbal_extreme = ceiling(n_total * 0.8),
+    
+    # Calculate Saturation (4 decimal places, FULL range [0, 1])
+    # We explicitly pass p_threshold = 1.0 to check the entire probability space
+    sat_balanced = map2_dbl(n1_bal, n2_bal, 
+                           ~grimu_saturation(.x, .y, decimals = 3, p_threshold = 1.0)),
+    
+    sat_unbalanced = map2_dbl(n1_unbal, n2_unbal, 
+                             ~grimu_saturation(.x, .y, decimals = 3, p_threshold = 1.0)),
+    
+    sat_unbalanced_extreme = map2_dbl(n1_unbal_extreme, n2_unbal_extreme, 
+                                     ~grimu_saturation(.x, .y, decimals = 3, p_threshold = 1.0))
+  )
+
+# --- Plotting ---
+
+comparison_grid_d3_full %>%
+  pivot_longer(cols = starts_with("sat_"), names_to = "Design", values_to = "Saturation") %>%
+  mutate(Design = recode(Design, 
+                         "sat_balanced" = "Balanced N (1:1 allocation)", 
+                         "sat_unbalanced" = "Unbalanced N (1:1.5 allocation)", 
+                         "sat_unbalanced_extreme" = "Unbalanced N (1:4 allocation)")) %>%
+  ggplot(aes(x = n_total, y = Saturation, color = Design)) +
+  geom_line(linewidth = 1, alpha = 0.75) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "The Forensic Power of GRIM-U (Full Range)",
+    subtitle = "Proportion of ALL valid p-values (range 0 to 1, 3 decimals)\nthat are mathematically possible",
+    x = "Total Sample Size (N)",
+    y = "Saturation (FPR)"
+  ) +
+  theme_linedraw(base_size = 14)
+  
+```
+
+### Reported to 4 decimal places
+
+```{r}
+
+comparison_grid_d4_full <- expand_grid(
+  n_total = seq(8, 500, by = 1)
+) %>%
+  mutate(
+    # Design 1: Balanced (approx 50/50)
+    n1_bal = floor(n_total * 0.5),
+    n2_bal = ceiling(n_total * 0.5),
+    
+    # Design 2: Unbalanced (approx 40/60)
+    n1_unbal = floor(n_total * 0.4),
+    n2_unbal = ceiling(n_total * 0.6),
+    
+    # Design 3: Extreme Unbalanced (approx 20/80)
+    n1_unbal_extreme = floor(n_total * 0.2),
+    n2_unbal_extreme = ceiling(n_total * 0.8),
+    
+    # Calculate Saturation (4 decimal places, FULL range [0, 1])
+    # We explicitly pass p_threshold = 1.0 to check the entire probability space
+    sat_balanced = map2_dbl(n1_bal, n2_bal, 
+                           ~grimu_saturation(.x, .y, decimals = 4, p_threshold = 1.0)),
+    
+    sat_unbalanced = map2_dbl(n1_unbal, n2_unbal, 
+                             ~grimu_saturation(.x, .y, decimals = 4, p_threshold = 1.0)),
+    
+    sat_unbalanced_extreme = map2_dbl(n1_unbal_extreme, n2_unbal_extreme, 
+                                     ~grimu_saturation(.x, .y, decimals = 4, p_threshold = 1.0))
+  )
+
+# --- Plotting ---
+
+comparison_grid_d4_full %>%
+  pivot_longer(cols = starts_with("sat_"), names_to = "Design", values_to = "Saturation") %>%
+  mutate(Design = recode(Design, 
+                         "sat_balanced" = "Balanced N (1:1 allocation)", 
+                         "sat_unbalanced" = "Unbalanced N (1:1.5 allocation)", 
+                         "sat_unbalanced_extreme" = "Unbalanced N (1:4 allocation)")) %>%
+  ggplot(aes(x = n_total, y = Saturation, color = Design)) +
+  geom_line(linewidth = 1, alpha = 0.75) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "The Forensic Power of GRIM-U (Full Range)",
+    subtitle = "Proportion of ALL valid p-values (range 0 to 1, 4 decimals)\nthat are mathematically possible",
+    x = "Total Sample Size (N)",
+    y = "Saturation (FPR)"
+  ) +
+  theme_linedraw(base_size = 14)
+  
+```
