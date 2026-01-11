@@ -43,7 +43,7 @@ grimu_map_pvalues <- function(n1, n2, u_min = 0, u_max = NULL) {
       # --- B. Asymptotic (NO TIES Variance) ---
       # PERMISSIVE: Calculated for ALL U (Integer and Fractional).
       # Catches cases where researcher has ties (Fractional U) but used wrong Sigma.
-      z_corr_no_ties   = (abs(U - mu) - 0.5) / sigma_no_ties,
+      z_corr_no_ties   = pmax(0, abs(U - mu) - 0.5) / sigma_no_ties, # clamp continuity correction
       p_corr_no_ties   = 2 * pnorm(z_corr_no_ties, lower.tail = FALSE),
       
       z_uncorr_no_ties = abs(U - mu) / sigma_no_ties,
@@ -52,7 +52,7 @@ grimu_map_pvalues <- function(n1, n2, u_min = 0, u_max = NULL) {
       # --- C. Asymptotic (TIES Variance) ---
       # PERMISSIVE: Calculated for ALL U.
       # Catches cases where researcher has Integer U but hidden ties.
-      z_corr_tied      = (abs(U - mu) - 0.5) / sigma_one_tie,
+      z_corr_tied      = pmax(0, abs(U - mu) - 0.5) / sigma_one_tie, # clamp continuity correction
       p_corr_tied      = 2 * pnorm(z_corr_tied, lower.tail = FALSE),
       
       z_uncorr_tied    = abs(U - mu) / sigma_one_tie,
