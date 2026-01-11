@@ -76,11 +76,16 @@ grimu_map_pvalues <- function(n1, n2, u_min = 0, u_max = NULL, alternative = "tw
 }
 
 # forensic tool
-grimu_check <- function(n1, n2, p_reported, comparison = "equal", digits = 2, 
-                        p_min = NULL, p_max = NULL, alternative = "two.sided") {
+grimu_check <- function(n1, n2, p_reported, 
+                        comparison = "equal", 
+                        digits = 2, 
+                        rounding = NULL, 
+                        p_min = NULL, p_max = NULL, 
+                        alternative = "two.sided") {
   
-  # 1. Range Detection 
+  # --- 1. Range Detection ---
   if (is.null(p_min) || is.null(p_max)) {
+    # Default window for bounds search (wide enough to catch all rounding types)
     window <- 10^(-digits) * 5 
     p_max_search <- p_reported + window
     
@@ -104,9 +109,7 @@ grimu_check <- function(n1, n2, p_reported, comparison = "equal", digits = 2,
     if (p_min_search <= 0) p_min_search <- NA_real_
   }
   
-  # 2. U Bounds 
-  # We need the SE to estimate bounds, so we quickly calc it or grab from engine
-  # Calculating locally is faster than calling engine just for sigma
+  # --- 2. U Bounds ---
   N <- n1 + n2
   sigma_est <- sqrt((n1 * n2 * (N + 1)) / 12)
   mu <- (n1 * n2) / 2
@@ -136,33 +139,66 @@ grimu_check <- function(n1, n2, p_reported, comparison = "equal", digits = 2,
     u_start_est <- floor(mu - u_dev_max - 2)
   }
   
-  # 3. Call Updated Engine with 'alternative'
+  # --- 3. Call Engine ---
   results_df <- grimu_map_pvalues(n1, n2, u_min = u_start_est, u_max = u_end_est, 
                                   alternative = alternative)
   
-  # 4. Consistency Logic
-  check_col <- function(col_val, p_rep, comp, dig) {
+  # --- 4. Consistency Logic (Dynamic Interval) ---
+  
+  # Handle rounding argument
+  # "round" = Nearest neighbor (half-up, half-down, even)
+  # "down"  = Truncation / Floor
+  # "up"    = Ceiling (Rare for p-values, but possible)
+  if (is.null(rounding)) {
+    methods <- c("round", "down") # Permissive default: Rounding OR Truncation
+  } else {
+    methods <- match.arg(rounding, c("round", "down", "up"), several.ok = TRUE)
+  }
+  
+  epsilon <- 10^(-digits)
+  buffer <- 1e-14 # Float safety
+  
+  # Calculate interval union
+  # We start with an impossible interval and expand it based on selected methods
+  lower_limit <- Inf
+  upper_limit <- -Inf
+  
+  if ("round" %in% methods) {
+    lower_limit <- min(lower_limit, p_reported - 0.5 * epsilon)
+    upper_limit <- max(upper_limit, p_reported + 0.5 * epsilon)
+  }
+  if ("down" %in% methods) { # Truncation: [p, p + epsilon)
+    lower_limit <- min(lower_limit, p_reported)
+    upper_limit <- max(upper_limit, p_reported + epsilon)
+  }
+  if ("up" %in% methods) { # Ceiling: (p - epsilon, p]
+    lower_limit <- min(lower_limit, p_reported - epsilon)
+    upper_limit <- max(upper_limit, p_reported)
+  }
+  
+  # Apply buffer for inclusive/exclusive stability
+  lower_limit <- lower_limit - buffer
+  upper_limit <- upper_limit + buffer
+  
+  check_col <- function(col_val) {
     if (is.na(col_val)) return(FALSE)
-    if (comp == "equal") {
-      roundwork::round_up(col_val, dig) == p_rep
+    
+    if (comparison == "equal") {
+      # Check if value falls within the calculated Union Interval
+      return(col_val >= lower_limit & col_val <= upper_limit)
     } else {
-      col_val < p_rep
+      return(col_val < p_reported)
     }
   }
   
   results_checked <- results_df %>%
     rowwise() %>%
     mutate(
-      # Check Exact
-      valid_exact = check_col(p_exact, p_reported, comparison, digits),
-      
-      # Check No-Ties Scenarios (Only calculated for integers)
-      valid_corr_no_ties   = check_col(p_corr_no_ties, p_reported, comparison, digits),
-      valid_uncorr_no_ties = check_col(p_uncorr_no_ties, p_reported, comparison, digits),
-      
-      # Check Tied Scenarios (Calculated for everyone)
-      valid_corr_tied      = check_col(p_corr_tied, p_reported, comparison, digits),
-      valid_uncorr_tied    = check_col(p_uncorr_tied, p_reported, comparison, digits),
+      valid_exact          = check_col(p_exact),
+      valid_corr_no_ties   = check_col(p_corr_no_ties),
+      valid_uncorr_no_ties = check_col(p_uncorr_no_ties),
+      valid_corr_tied      = check_col(p_corr_tied),
+      valid_uncorr_tied    = check_col(p_uncorr_tied),
       
       # Overall Consistency: Match ANY of the 5
       is_consistent = valid_exact | 
@@ -180,6 +216,7 @@ grimu_check <- function(n1, n2, p_reported, comparison = "equal", digits = 2,
   summary_df <- tibble(
     n1 = n1, n2 = n2, p_reported = p_reported,
     alternative = alternative,
+    rounding = paste(methods, collapse = "+"),
     consistent = any(results_checked$is_consistent),
     # Flags for diagnosis
     matches_exact = any(results_checked$valid_exact),
