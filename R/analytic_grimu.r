@@ -126,6 +126,8 @@ grimu_check <- function(n1, n2, p_reported,
                         p_min = NULL, p_max = NULL, 
                         alternative = "two.sided") {
   
+  alternative <- match.arg(alternative, c("two.sided", "less", "greater"))
+  
   # --- 1. Range Detection ---
   if (is.null(p_min) || is.null(p_max)) {
     # Default window for bounds search (wide enough to catch all rounding types)
@@ -135,11 +137,8 @@ grimu_check <- function(n1, n2, p_reported,
     # Calculate raw lower bound
     raw_p_min <- p_reported - window
     
-    if (comparison == "less_than") {
-      p_min_search <- NA_real_ # Flag to trigger U=0 anchor
-    } else if (raw_p_min <= 0) {
-      # If the window touches or goes below zero, we can't use qnorm.
-      # We flag this to anchor the U-search to 0 manually.
+    # If comparison is inequality, or window touches 0, anchor the "deep tail".
+    if (comparison == "less_than" || raw_p_min <= 0) {
       p_min_search <- NA_real_ 
     } else {
       # Standard case: Window is strictly positive (e.g., 0.04 to 0.06)
@@ -152,59 +151,51 @@ grimu_check <- function(n1, n2, p_reported,
     if (p_min_search <= 0) p_min_search <- NA_real_
   }
   
-  # --- 2. U Bounds ---
-  # We need the SE to estimate bounds, so we quickly calc it or grab from engine
-  # Calculating locally is faster than calling engine just for sigma
+  # --- 2. U Bounds Calculation ---
   N <- n1 + n2
-  sigma_est <- sqrt((n1 * n2 * (N + 1)) / 12)
   mu <- (n1 * n2) / 2
+  sigma_est <- sqrt((n1 * n2 * (N + 1)) / 12)
+  max_u <- n1 * n2
   
-  # Z bounds to U bounds
-  # Helper for Z-bounds:
-  # If two-sided, alpha = p. Z = qnorm(1 - p/2).
-  # If one-sided, alpha = p. Z = qnorm(1 - p).
-  # We adjust the input to qnorm based on 'alternative'.
-  calc_z <- function(p) {
-    if (alternative == "two.sided") qnorm(1 - p / 2) else qnorm(1 - p)
+  # Helper: Convert P to Z (Signed)
+  p_to_z <- function(p, alt) {
+    if (is.na(p)) return(Inf) # Infinite Z implies maximal U deviation
+    if (alt == "two.sided") return(qnorm(1 - p / 2)) # Always positive distance
+    if (alt == "less")      return(qnorm(p))         # Negative Z
+    if (alt == "greater")   return(qnorm(1 - p))     # Positive Z
   }
   
-  # Upper U bound 
-  z_min <- calc_z(p_max_search)
-  u_dev_min <- abs(z_min * sigma_est)
-  u_end_est <- min(floor(mu), ceiling(mu - u_dev_min + 2)) 
+  # Calculate Z boundaries for the p-value window
+  # Note: 
+  # Small P -> Large Z magnitude (Deep Tail)
+  # Large P -> Small Z magnitude (Near Mean)
   
-  # Lower U bound 
-  if (is.na(p_min_search)) {
-    # If p_min was < 0 or "less_than", search the WHOLE tail down to 0.
-    u_start_est <- 0 
-  } else {
-    # Standard Z-based search
-    z_max <- calc_z(p_min_search)
-    u_dev_max <- abs(z_max * sigma_est)
-    u_start_est <- floor(mu - u_dev_max - 2)
-  }
+  z_deep <- p_to_z(if(is.na(p_min_search)) 0 else p_min_search, alternative)
+  z_shallow <- p_to_z(p_max_search, alternative)
+  
+  # Convert Z to U
+  # U ~ mu + Z*sigma
+  u_bound_1 <- mu + z_deep * sigma_est
+  u_bound_2 <- mu + z_shallow * sigma_est
+  
+  # Sort bounds (min to max) and pad slightly for safety
+  u_start_est <- floor(min(u_bound_1, u_bound_2) - 2)
+  u_end_est   <- ceiling(max(u_bound_1, u_bound_2) + 2)
   
   # --- 3. Call Engine ---
   results_df <- grimu_map_pvalues(n1, n2, u_min = u_start_est, u_max = u_end_est, 
                                   alternative = alternative)
   
-  # --- 4. Consistency Logic (Dynamic Interval) ---
-  
-  # Handle rounding argument
-  # "round" = Nearest neighbor (half-up, half-down, even)
-  # "trunc"  = Truncation / Floor
-  # "up"    = Ceiling (Rare for p-values, but possible)
+  # --- 4. Consistency Logic (Interval Union) ---
   if (is.null(rounding)) {
-    methods <- c("round", "trunc") # Permissive default: Rounding OR Truncation
+    methods <- c("round", "trunc") 
   } else {
     methods <- match.arg(rounding, c("round", "trunc", "up"), several.ok = TRUE)
   }
   
   epsilon <- 10^(-digits)
-  buffer <- 1e-14 # Float safety
+  buffer <- 1e-14 
   
-  # Calculate interval union
-  # We start with an impossible interval and expand it based on selected methods
   lower_limit <- Inf
   upper_limit <- -Inf
   
@@ -212,24 +203,21 @@ grimu_check <- function(n1, n2, p_reported,
     lower_limit <- min(lower_limit, p_reported - 0.5 * epsilon)
     upper_limit <- max(upper_limit, p_reported + 0.5 * epsilon)
   }
-  if ("trunc" %in% methods) { # Truncation: [p, p + epsilon)
+  if ("trunc" %in% methods) { 
     lower_limit <- min(lower_limit, p_reported)
     upper_limit <- max(upper_limit, p_reported + epsilon)
   }
-  if ("up" %in% methods) { # Ceiling: (p - epsilon, p]
+  if ("up" %in% methods) { 
     lower_limit <- min(lower_limit, p_reported - epsilon)
     upper_limit <- max(upper_limit, p_reported)
   }
   
-  # Apply buffer for inclusive/exclusive stability
   lower_limit <- lower_limit - buffer
   upper_limit <- upper_limit + buffer
   
   check_col <- function(col_val) {
     if (is.na(col_val)) return(FALSE)
-    
     if (comparison == "equal") {
-      # Check if value falls within the calculated Union Interval
       return(col_val >= lower_limit & col_val <= upper_limit)
     } else {
       return(col_val < p_reported)
@@ -245,7 +233,6 @@ grimu_check <- function(n1, n2, p_reported,
       valid_corr_tied      = check_col(p_corr_tied),
       valid_uncorr_tied    = check_col(p_uncorr_tied),
       
-      # Overall Consistency: Match ANY of the 5
       is_consistent = valid_exact | 
         valid_corr_no_ties | valid_uncorr_no_ties | 
         valid_corr_tied | valid_uncorr_tied
@@ -263,7 +250,6 @@ grimu_check <- function(n1, n2, p_reported,
     alternative = alternative,
     rounding = paste(methods, collapse = "+"),
     consistent = any(results_checked$is_consistent),
-    # Flags for diagnosis
     matches_exact = any(results_checked$valid_exact),
     matches_no_ties = any(results_checked$valid_corr_no_ties | results_checked$valid_uncorr_no_ties),
     matches_ties = any(results_checked$valid_corr_tied | results_checked$valid_uncorr_tied)
