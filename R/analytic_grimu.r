@@ -77,7 +77,7 @@ grimu_map_pvalues <- function(n1, n2, u_min = 0, u_max = NULL, alternative = "tw
 
 # forensic tool
 grimu_check <- function(n1, n2, p_reported, comparison = "equal", digits = 2, 
-                        p_min = NULL, p_max = NULL) {
+                        p_min = NULL, p_max = NULL, alternative = "two.sided") {
   
   # 1. Range Detection 
   if (is.null(p_min) || is.null(p_max)) {
@@ -112,8 +112,16 @@ grimu_check <- function(n1, n2, p_reported, comparison = "equal", digits = 2,
   mu <- (n1 * n2) / 2
   
   # Z bounds to U bounds
-  # Upper U bound (unchanged)
-  z_min <- qnorm(1 - p_max_search / 2)
+  # Helper for Z-bounds:
+  # If two-sided, alpha = p. Z = qnorm(1 - p/2).
+  # If one-sided, alpha = p. Z = qnorm(1 - p).
+  # We adjust the input to qnorm based on 'alternative'.
+  calc_z <- function(p) {
+    if (alternative == "two.sided") qnorm(1 - p / 2) else qnorm(1 - p)
+  }
+  
+  # Upper U bound 
+  z_min <- calc_z(p_max_search)
   u_dev_min <- abs(z_min * sigma_est)
   u_end_est <- min(floor(mu), ceiling(mu - u_dev_min + 2)) 
   
@@ -123,19 +131,18 @@ grimu_check <- function(n1, n2, p_reported, comparison = "equal", digits = 2,
     u_start_est <- 0 
   } else {
     # Standard Z-based search
-    z_max <- qnorm(1 - p_min_search / 2)
+    z_max <- calc_z(p_min_search)
     u_dev_max <- abs(z_max * sigma_est)
     u_start_est <- floor(mu - u_dev_max - 2)
   }
   
-  # 3. Call Updated Engine
-  results_df <- grimu_map_pvalues(n1, n2, u_min = u_start_est, u_max = u_end_est)
+  # 3. Call Updated Engine with 'alternative'
+  results_df <- grimu_map_pvalues(n1, n2, u_min = u_start_est, u_max = u_end_est, 
+                                  alternative = alternative)
   
-  # 4. Consistency Logic (Expanded for 5 columns)
+  # 4. Consistency Logic
   check_col <- function(col_val, p_rep, comp, dig) {
-    # Check for NA (e.g. no-tie calc on fractional U)
     if (is.na(col_val)) return(FALSE)
-    
     if (comp == "equal") {
       roundwork::round_up(col_val, dig) == p_rep
     } else {
@@ -166,11 +173,13 @@ grimu_check <- function(n1, n2, p_reported, comparison = "equal", digits = 2,
     # Filter for display (Diagnostic mode)
     filter(
       is_consistent | 
-        (p_corr_tied >= p_min_search & p_corr_tied <= p_max_search)
+        (p_corr_tied >= (if(is.na(p_min_search)) 0 else p_min_search) & 
+           p_corr_tied <= p_max_search)
     )
   
   summary_df <- tibble(
     n1 = n1, n2 = n2, p_reported = p_reported,
+    alternative = alternative,
     consistent = any(results_checked$is_consistent),
     # Flags for diagnosis
     matches_exact = any(results_checked$valid_exact),
