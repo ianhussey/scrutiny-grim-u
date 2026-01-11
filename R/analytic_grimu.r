@@ -15,14 +15,14 @@ grimu_map_pvalues <- function(n1, n2, u_min = 0, u_max = NULL) {
   u_start <- max(0, u_min)
   u_end <- min(n1 * n2, u_max)
   
+  # Use roundwork to ensure clean steps (avoid floating point drift)
   vals <- roundwork::round_up(seq(u_start, u_end, by = 0.5), 1)
   
   # --- Standard Errors ---
   # 1. Sigma assuming NO ties (Max variance)
   sigma_no_ties <- sqrt((n1 * n2 * (N + 1)) / 12)
   
-  # 2. Sigma assuming ONE pair of ties (Slightly reduced variance)
-  # This serves as our "Minimal Ties" proxy.
+  # 2. Sigma assuming ONE pair of ties (Minimal variance reduction)
   correction_term <- (n1 * n2 * 6) / (12 * N * (N - 1))
   sigma_one_tie <- sqrt((n1 * n2 * (N + 1)) / 12 - correction_term)
   
@@ -32,24 +32,26 @@ grimu_map_pvalues <- function(n1, n2, u_min = 0, u_max = NULL) {
       is_integer = (U %% 1 == 0),
       
       # --- A. Exact Method ---
-      # Only valid for Integers. (Fractional U implies ties -> Exact undefined/unavailable)
+      # STRICT: Only valid for Integers. 
+      # pwilcox is mathematically undefined for fractional quantiles.
       p_exact = if_else(
         is_integer,
         2 * pwilcox(if_else(U < mu, U, n1 * n2 - U), n1, n2),
         NA_real_
       ),
       
-      # --- B. Asymptotic (NO TIES Assumption) ---
-      # Valid only for Integers. (Fractional U physically impossible without ties)
+      # --- B. Asymptotic (NO TIES Variance) ---
+      # PERMISSIVE: Calculated for ALL U (Integer and Fractional).
+      # Catches cases where researcher has ties (Fractional U) but used wrong Sigma.
       z_corr_no_ties   = (abs(U - mu) - 0.5) / sigma_no_ties,
-      p_corr_no_ties   = if_else(is_integer, 2 * pnorm(z_corr_no_ties, lower.tail = FALSE), NA_real_),
+      p_corr_no_ties   = 2 * pnorm(z_corr_no_ties, lower.tail = FALSE),
       
       z_uncorr_no_ties = abs(U - mu) / sigma_no_ties,
-      p_uncorr_no_ties = if_else(is_integer, 2 * pnorm(z_uncorr_no_ties, lower.tail = FALSE), NA_real_),
+      p_uncorr_no_ties = 2 * pnorm(z_uncorr_no_ties, lower.tail = FALSE),
       
-      # --- C. Asymptotic (TIES Assumption) ---
-      # Valid for EVERYONE. 
-      # Even if U is Integer, the underlying data *could* have had ties.
+      # --- C. Asymptotic (TIES Variance) ---
+      # PERMISSIVE: Calculated for ALL U.
+      # Catches cases where researcher has Integer U but hidden ties.
       z_corr_tied      = (abs(U - mu) - 0.5) / sigma_one_tie,
       p_corr_tied      = 2 * pnorm(z_corr_tied, lower.tail = FALSE),
       
