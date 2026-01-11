@@ -149,12 +149,12 @@ grimu_check <- function(n1, n2, p_reported,
   
   # Handle rounding argument
   # "round" = Nearest neighbor (half-up, half-down, even)
-  # "down"  = Truncation / Floor
+  # "trunc"  = Truncation / Floor
   # "up"    = Ceiling (Rare for p-values, but possible)
   if (is.null(rounding)) {
-    methods <- c("round", "down") # Permissive default: Rounding OR Truncation
+    methods <- c("round", "trunc") # Permissive default: Rounding OR Truncation
   } else {
-    methods <- match.arg(rounding, c("round", "down", "up"), several.ok = TRUE)
+    methods <- match.arg(rounding, c("round", "trunc", "up"), several.ok = TRUE)
   }
   
   epsilon <- 10^(-digits)
@@ -169,7 +169,7 @@ grimu_check <- function(n1, n2, p_reported,
     lower_limit <- min(lower_limit, p_reported - 0.5 * epsilon)
     upper_limit <- max(upper_limit, p_reported + 0.5 * epsilon)
   }
-  if ("down" %in% methods) { # Truncation: [p, p + epsilon)
+  if ("trunc" %in% methods) { # Truncation: [p, p + epsilon)
     lower_limit <- min(lower_limit, p_reported)
     upper_limit <- max(upper_limit, p_reported + epsilon)
   }
