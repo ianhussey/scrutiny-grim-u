@@ -1027,6 +1027,12 @@ check1
 check2 <- grimu_check(n1 = 5, n2 = 5, p_reported = 0.11, digits = 2)
 check2
 
+check3 <- grimu_check(n1 = 18, n2 = 60, p_reported = 0.04, alternative = "less")
+check3
+
+check4 <- grimu_check(n1 = 18, n2 = 60, p_reported = 0.04, alternative = "greater")
+check4
+
 ```
 
 ```{r}

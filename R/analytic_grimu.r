@@ -12,39 +12,37 @@ grimu_map_pvalues <- function(n1, n2, u_min = NULL, u_max = NULL, alternative = 
   mu <- (n1 * n2) / 2
   max_u <- n1 * n2
   
-  # --- 1. Dynamic Search Range (Fixing Critique #2) ---
-  # If bounds are missing, default to the mathematically relevant tail.
+  # Default bounds logic (Dynamic Tail Selection)
   if (is.null(u_min) || is.null(u_max)) {
     if (alternative == "greater") {
-      # Upper tail: Scan from Mean up to Max U
-      if (is.null(u_min)) u_min <- floor(mu) # Start at mean to catch p~0.5
+      if (is.null(u_min)) u_min <- floor(mu) 
       if (is.null(u_max)) u_max <- max_u
     } else {
-      # Lower tail (Less/Two-sided): Scan from 0 up to Mean
       if (is.null(u_min)) u_min <- 0
-      if (is.null(u_max)) u_max <- ceiling(mu) # End at mean
+      if (is.null(u_max)) u_max <- ceiling(mu) 
     }
   }
   
+  # Safety Clamp: Ensure bounds are physical
   u_start <- max(0, u_min)
-  u_end <- min(max_u, u_max)
+  u_end   <- min(max_u, u_max)
   
-  # Generate Steps
+  # Safety Check: If start > end, return empty tibble immediately
+  if (u_start > u_end) return(tibble(U = numeric(), is_integer = logical()))
+  
   vals <- roundwork::round_up(seq(u_start, u_end, by = 0.5), 1)
   
-  # --- 2. Constants for Calculations ---
+  # Constants
   sigma_no_ties <- sqrt((n1 * n2 * (N + 1)) / 12)
-  
-  # Sigma for Ties (One Pair)
   correction_term <- (n1 * n2 * 6) / (12 * N * (N - 1))
   sigma_one_tie <- sqrt((n1 * n2 * (N + 1)) / 12 - correction_term)
   
-  # --- 3. Vectorized Calculation (Fixing Critique #1) ---
+  # Vectorized Calc
   results_df <- tibble(U = vals) %>%
     mutate(
       is_integer = (U %% 1 == 0),
       
-      # --- A. Exact Method ---
+      # Exact
       p_exact = if_else(is_integer, case_when(
         alternative == "less"      ~ pwilcox(U, n1, n2),
         alternative == "greater"   ~ pwilcox(U - 1, n1, n2, lower.tail = FALSE),
@@ -55,31 +53,20 @@ grimu_map_pvalues <- function(n1, n2, u_min = NULL, u_max = NULL, alternative = 
         }
       ), NA_real_),
       
-      # --- B & C. Asymptotic Methods ---
-      # We define a helper to calculate Z and P based on the alternative.
-      # This applies the correct Continuity Correction (+0.5 or -0.5) directionally.
-      
-      # 1. Base Deviations (Unscaled)
-      # Two-sided: |U - mu| - 0.5 (clamped)
-      # Less:      (U - mu) + 0.5
-      # Greater:   (U - mu) - 0.5
-      
+      # Deviations
       dev_cc = case_when(
         alternative == "two.sided" ~ pmax(0, abs(U - mu) - 0.5),
         alternative == "less"      ~ (U - mu) + 0.5,
         alternative == "greater"   ~ (U - mu) - 0.5
       ),
-      
       dev_uncorr = case_when(
         alternative == "two.sided" ~ abs(U - mu),
         alternative == "less"      ~ (U - mu),
         alternative == "greater"   ~ (U - mu)
-      )
-    ) %>%
-    mutate(
-      # Calculate P-values using the correct Sigma and Tail
+      ),
       
-      # No Ties (Corrected)
+      # P-values
+      # No Ties
       z_corr_no_ties = dev_cc / sigma_no_ties,
       p_corr_no_ties = case_when(
         alternative == "two.sided" ~ 2 * pnorm(z_corr_no_ties, lower.tail = FALSE),
