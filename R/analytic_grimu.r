@@ -1,6 +1,24 @@
 library(tidyverse)
 library(roundwork)
 
+check_u_consistency <- function(n1, n2, u_reported) {
+  u_max <- n1 * n2
+  
+  # 1. Check Bounds
+  in_bounds <- (u_reported >= 0) & (u_reported <= u_max)
+  
+  # 2. Check Granularity (Integer or Half-Integer)
+  # Multiplying by 2 should result in an integer
+  is_valid_granularity <- (u_reported * 2) %% 1 == 0
+  
+  res <- tibble::tibble(
+    u_bounds_consistent = in_bounds,
+    u_granularity_consistent = is_valid_granularity
+  )
+  
+  return(res)
+}
+
 # core engine
 grimu_map_pvalues <- function(n1, n2, u_min = NULL, u_max = NULL, alternative = "two.sided") {
   
@@ -119,7 +137,9 @@ grimu_map_pvalues <- function(n1, n2, u_min = NULL, u_max = NULL, alternative = 
 }
 
 # forensic tool
-grimu_check <- function(n1, n2, p_reported, 
+grimu_check <- function(n1, n2, 
+                        u_reported,
+                        p_reported, 
                         comparison = "equal", 
                         digits = 2, 
                         rounding = NULL, 
@@ -127,6 +147,34 @@ grimu_check <- function(n1, n2, p_reported,
                         alternative = "two.sided") {
   
   alternative <- match.arg(alternative, c("two.sided", "less", "greater"))
+  
+  if (is.na(n1) || is.na(n2)) {
+    stop("n1 and n2 must be supplied")
+  }
+  
+  is_whole <- function(x) !is.na(x) && abs(x - round(x)) < 1e-10
+  if (!is_whole(n1) || !is_whole(n2)) {
+    stop("n1 and n2 must be integers")
+  }
+  
+  if (!is.na(p_reported) & (p_reported < 0 || p_reported > 1)) {
+    stop("p_reported must be between 0 and 1, or NA")
+  }
+  
+  if (!is.numeric(u_reported) || is.na(u_reported)) {
+    stop("u_reported must be numeric or NA")
+  }
+  
+  # check U granularity and global range
+  if (!is.na(u_reported)) {
+    u_res <- check_u_consistency(n1, n2, u_reported)
+  } else {
+    u_res <- tibble::tibble(
+      u_bounds_consistent = NA,
+      u_granularity_consistent = NA
+    )
+  }
+  
   
   # --- 1. Range Detection ---
   if (is.null(p_min) || is.null(p_max)) {
@@ -259,14 +307,20 @@ grimu_check <- function(n1, n2, p_reported,
     )
   
   summary_df <- tibble(
-    n1 = n1, n2 = n2, p_reported = p_reported,
+    n1 = n1, 
+    n2 = n2, 
+    p_reported = p_reported,
     alternative = alternative,
     rounding = paste(methods, collapse = "+"),
-    consistent = any(results_checked$is_consistent),
-    matches_exact = any(results_checked$valid_exact),
-    matches_no_ties = any(results_checked$valid_corr_no_ties | results_checked$valid_uncorr_no_ties),
-    matches_ties = any(results_checked$valid_corr_tied | results_checked$valid_uncorr_tied)
-  )
+    consistent = **TODO**, # if (u_bounds_consistent & u_granularity_consistent & u_consistent & p_consistent), where u_consistent & p_consistent are for the same row (ie correspond with one another)
+    u_bounds_consistent = u_res$u_bounds_consistent,
+    u_granularity_consistent = u_res$u_granularity_consistent,
+    u_consistent = **TODO**, # if u_reported is among the possible u values, similar to how p is checked
+    p_consistent = any(results_checked$is_consistent),
+    p_matches_exact = any(results_checked$valid_exact),
+    p_matches_no_ties = any(results_checked$valid_corr_no_ties | results_checked$valid_uncorr_no_ties),
+    p_matches_ties = any(results_checked$valid_corr_tied | results_checked$valid_uncorr_tied)
+  )  
   
   return(list(summary = summary_df, details = results_checked))
 }
