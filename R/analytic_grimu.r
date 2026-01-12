@@ -4,10 +4,10 @@ library(roundwork)
 # core engine
 grimu_map_pvalues <- function(n1, n2, u_min = NULL, u_max = NULL, alternative = "two.sided") {
   
-  # Validate input
-  alternative <- match.arg(alternative, c("two.sided", "less", "greater"))
+  # Safety Check: Input Validation
+  if (is.na(n1) || is.na(n2)) return(tibble(U = numeric(), is_integer = logical()))
   
-  # --- Constants ---
+  alternative <- match.arg(alternative, c("two.sided", "less", "greater"))
   N <- n1 + n2
   mu <- (n1 * n2) / 2
   max_u <- n1 * n2
@@ -23,9 +23,21 @@ grimu_map_pvalues <- function(n1, n2, u_min = NULL, u_max = NULL, alternative = 
     }
   }
   
+  # Enforce Half-Integer Lattice
+  # Snap arbitrary bounds to the nearest valid U values (integers or half-integers).
+  # If u_min = 0.2 -> snaps up to 0.5
+  # If u_max = 0.8 -> snaps down to 0.5
+  
+  # Handle NULLs before math (though logic above ensures they aren't NULL)
+  if (is.null(u_min)) u_min <- 0
+  if (is.null(u_max)) u_max <- max_u
+  
+  u_start <- ceiling(u_min * 2) / 2
+  u_end   <- floor(u_max * 2) / 2
+  
   # Safety Clamp: Ensure bounds are physical
-  u_start <- max(0, u_min)
-  u_end   <- min(max_u, u_max)
+  u_start <- max(0, u_start)
+  u_end   <- min(max_u, u_end)
   
   # Safety Check: If start > end, return empty tibble immediately
   if (u_start > u_end) return(tibble(U = numeric(), is_integer = logical()))
