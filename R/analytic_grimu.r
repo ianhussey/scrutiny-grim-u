@@ -246,7 +246,7 @@ grimu_check <- function(n1, n2, p_reported,
 }
 
 # saturation calc
-grimu_saturation <- function(n1, n2, decimals = 3, p_threshold = 0.05) {
+grimu_saturation <- function(n1, n2, decimals = 3, p_lower_threshold = 0, p_upper_threshold = 1) {
   
   # 1. CALL THE ENGINE 
   # Get all U values from 0 to Mean (Sufficient because distribution is symmetric)
@@ -258,14 +258,14 @@ grimu_saturation <- function(n1, n2, decimals = 3, p_threshold = 0.05) {
   unique_rounded_p <- p_space %>%
     pivot_longer(cols = starts_with("p_"), values_to = "p_val") %>%
     filter(!is.na(p_val)) %>%
-    filter(p_val <= p_threshold) %>%
+    filter(p_val >= p_lower_threshold & p_val <= p_upper_threshold) %>%
     # Round to target precision
-    mutate(p_rounded = round(p_val, decimals)) %>%
+    mutate(p_rounded = roundwork::round_up(p_val, decimals)) %>%
     distinct(p_rounded) %>%
     nrow()
   
   # 3. Calculate Coverage
-  total_slots <- length(seq(0, p_threshold, by = 10^-decimals))
+  total_slots <- length(seq(p_lower_threshold, p_upper_threshold, by = 10^-decimals))
   
   return(unique_rounded_p / total_slots)
 }
