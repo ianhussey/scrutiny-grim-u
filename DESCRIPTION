@@ -1,0 +1,27 @@
+Package: analyticgrimu
+Title: An implementation of Heathers and Grimes' (2025) GRIM-U, a granularity test for the results of Mann-Whitney U tests.
+Version: 0.1
+Authors@R: c(
+    person("Ian", "Hussey", , "Ian.hussey@unibe.ch", role = c("aut", "cre"),
+           comment = c(ORCID = "0000-0001-8906-7559"))
+  )
+Description: An implementation of GRIM-U.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Depends: 
+    R (>= 4.1.0)
+Imports:
+    dplyr,
+    tibble,
+    ggplot2,
+    ggstance,
+    scales,
+    roundwork,
+    Purrr
+Suggests:
+    devtools,
+    roxygen2
+VignetteBuilder: knitr
+BuildVignettes: false
