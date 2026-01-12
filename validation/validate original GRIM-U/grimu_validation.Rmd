@@ -22,9 +22,9 @@ knitr::opts_chunk$set(message = FALSE,
 
 # Problem setting
 
-From my understanding, simrank() requires an integer input for U. To simulate a half-integer target (e.g., 70.5), the code must simulate the integer above it (e.g., 71) and then force a tie. This tie mathematically subtracts 0.5 from the score, hitting the target ($71 - 0.5 = 70.5$).
+From my understanding, Grimes' simrank() requires an integer input for U. To simulate a half-integer target (e.g., 70.5), the code must simulate the integer above it (e.g., 71) and then force a tie. This tie mathematically subtracts 0.5 from the score, hitting the target ($71 - 0.5 = 70.5$).
 
-However, the original code used `round()`, which follows "Banker's Rounding" (rounding to the nearest even number). eg the following illustrates that base::round() doens't perform how many people expect:
+However, the original code used `round()`, which follows "Banker's Rounding" (rounding to the nearest even number). eg the following illustrates that base::round() doesn't perform how many people expect:
 
 ```{r}
 round(0.5)
