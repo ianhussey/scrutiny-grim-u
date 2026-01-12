@@ -30,13 +30,12 @@ grimu_map_pvalues <- function(n1, n2, u_min = NULL, u_max = NULL, alternative = 
   # Safety Check: Input Validation
   if (is.na(n1) || is.na(n2)) return(tibble(U = numeric(), is_integer = logical()))
   
-  comparison <- match.arg(comparison, c("equal","less_than"))
   alternative <- match.arg(alternative, c("two.sided", "less", "greater"))
   N <- n1 + n2
   mu <- (n1 * n2) / 2
   max_u <- n1 * n2
   
-  # Default bounds logic (Dynamic Tail Selection)
+  # Default bounds logic
   if (is.null(u_min) || is.null(u_max)) {
     if (alternative == "greater") {
       if (is.null(u_min)) u_min <- floor(mu) 
