@@ -35,7 +35,7 @@ grimu_map_pvalues <- function(n1, n2, u_min = NULL, u_max = NULL, alternative = 
   u_start <- ceiling(u_min * 2) / 2
   u_end   <- floor(u_max * 2) / 2
   
-  # Safety Clamp: Ensure bounds are physical
+  # Safety Clamp
   u_start <- max(0, u_start)
   u_end   <- min(max_u, u_end)
   
@@ -158,11 +158,11 @@ grimu_check <- function(n1, n2, p_reported,
   
   # Helper: Convert P to Z (Signed)
   p_to_z <- function(p, alt) {
-    p_safe <- min(1, max(0, p)) # clamp p to [0,1]
-    if (is.na(p)) return(Inf) # Infinite Z implies maximal U deviation
-    if (alt == "two.sided") return(qnorm(1 - p / 2)) # Always positive distance
-    if (alt == "less")      return(qnorm(p))         # Negative Z
-    if (alt == "greater")   return(qnorm(1 - p))     # Positive Z
+    p_safe <- min(1, max(0, p)) 
+    if (is.na(p)) return(Inf)
+    if (alt == "two.sided") return(qnorm(1 - p_safe / 2))
+    if (alt == "less")      return(qnorm(p_safe))        
+    if (alt == "greater")   return(qnorm(1 - p_safe))    
   }
   
   # Calculate Z boundaries for the p-value window
@@ -248,10 +248,13 @@ grimu_check <- function(n1, n2, p_reported,
     ) %>%
     ungroup() %>%
     # Filter for display (Diagnostic mode)
+    # Show row if IT IS consistent OR if ANY p-value is in the general "search window"
+    # This reveals near-misses for all 5 methods, not just tied-corrected.
     filter(
       is_consistent | 
-        (p_corr_tied >= (if(is.na(p_min_search)) 0 else p_min_search) & 
-           p_corr_tied <= p_max_search)
+        if_any(starts_with("p_"), 
+               ~ . >= (if(is.na(p_min_search)) 0 else p_min_search) & 
+                 . <= p_max_search)
     )
   
   summary_df <- tibble(
